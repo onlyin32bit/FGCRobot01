@@ -1,17 +1,12 @@
-repositories {
-    mavenCentral()
-    google() // Needed for androidx
-}
+def sdkVersion = rootProject.ext.ftcSdkVersion
 
 dependencies {
-    implementation 'org.firstinspires.ftc:Inspection:11.1.0'
-    implementation 'org.firstinspires.ftc:Blocks:11.1.0'
-    implementation 'org.firstinspires.ftc:RobotCore:11.1.0'
-    implementation 'org.firstinspires.ftc:RobotServer:11.1.0'
-    implementation 'org.firstinspires.ftc:OnBotJava:11.1.0'
-    implementation 'org.firstinspires.ftc:Hardware:11.1.0'
-    implementation 'org.firstinspires.ftc:FtcCommon:11.1.0'
-    implementation 'org.firstinspires.ftc:Vision:11.1.0'
+    implementation "org.firstinspires.ftc:Inspection:$sdkVersion"
+    implementation "org.firstinspires.ftc:Blocks:$sdkVersion"
+    implementation "org.firstinspires.ftc:RobotCore:$sdkVersion"
+    implementation "org.firstinspires.ftc:RobotServer:$sdkVersion"
+    implementation "org.firstinspires.ftc:OnBotJava:$sdkVersion"
+    implementation "org.firstinspires.ftc:Hardware:$sdkVersion"
+    implementation "org.firstinspires.ftc:FtcCommon:$sdkVersion"
     implementation 'androidx.appcompat:appcompat:1.2.0'
 }
-

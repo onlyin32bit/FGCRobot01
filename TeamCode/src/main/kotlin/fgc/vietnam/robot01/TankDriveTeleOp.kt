@@ -1,10 +1,9 @@
-package org.firstinspires.ftc.teamcode.opmode
+package fgc.vietnam.robot01
 
 import com.qualcomm.robotcore.eventloop.opmode.OpMode
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp
-import org.firstinspires.ftc.teamcode.drive.TankDrive
 
-@TeleOp(name = "FGC: 2 Motor Tank Drive", group = "FGC")
+@TeleOp(name = "FGC: 2 Motor Tank Drive", group = "FGC Vietnam")
 class TankDriveTeleOp : OpMode() {
     private lateinit var drive: TankDrive
 
