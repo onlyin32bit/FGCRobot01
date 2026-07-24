@@ -7,6 +7,7 @@ import com.qualcomm.robotcore.hardware.HardwareMap
 import com.qualcomm.robotcore.hardware.IMU
 import com.qualcomm.hardware.rev.RevHubOrientationOnRobot
 import org.firstinspires.ftc.robotcore.external.navigation.AngleUnit
+import org.firstinspires.ftc.robotcore.external.navigation.CurrentUnit
 import kotlin.math.abs
 
 internal data class DriveTelemetry(
@@ -25,6 +26,8 @@ internal data class DriveTelemetry(
     val leftActualVelocity: Double,
     val rightTargetVelocity: Double,
     val rightActualVelocity: Double,
+    val leftCurrentAmps: Double,
+    val rightCurrentAmps: Double,
     val linearSpeedMmPerSecond: Double,
     val batteryVoltage: Double,
     val headingHoldEnabled: Boolean,
@@ -71,29 +74,112 @@ internal class Drivetrain(hardwareMap: HardwareMap) {
 
     private var targetHeading = heading()
     private var limitedForward = 0.0
+    private var limitedTankLeft = 0.0
+    private var limitedTankRight = 0.0
     private var lastDriveTimeNanos = System.nanoTime()
     private var headingHoldEnabled = true
     private var integralCorrection = 0.0
+    private var headingCapturePending = false
+    private var headingSettledSeconds = 0.0
+    private var zeroForwardSeconds = 0.0
 
-    fun drive(forward: Double, turn: Double): DriveTelemetry {
+    fun drive(forward: Double, turn: Double): DriveTelemetry =
+        drive(
+            forward = forward,
+            turn = turn,
+            allowHeadingHold = true,
+            limitAcceleration = true,
+        )
+
+    fun driveTank(left: Double, right: Double): DriveTelemetry {
         val elapsedSeconds = loopElapsedSeconds()
-        val smoothForward = limitForward(
-            target = forward,
+        limitedTankLeft = limitCommand(
+            target = left,
+            current = limitedTankLeft,
             elapsedSeconds = elapsedSeconds,
         )
+        limitedTankRight = limitCommand(
+            target = right,
+            current = limitedTankRight,
+            elapsedSeconds = elapsedSeconds,
+        )
+        return drive(
+            forward = (limitedTankLeft + limitedTankRight) / 2.0,
+            turn = (limitedTankLeft - limitedTankRight) / 2.0,
+            allowHeadingHold = false,
+            limitAcceleration = false,
+            elapsedSeconds = elapsedSeconds,
+        )
+    }
+
+    private fun drive(
+        forward: Double,
+        turn: Double,
+        allowHeadingHold: Boolean,
+        limitAcceleration: Boolean,
+        elapsedSeconds: Double = loopElapsedSeconds(),
+    ): DriveTelemetry {
+        val smoothForward = if (limitAcceleration) {
+            limitForward(
+                target = forward,
+                elapsedSeconds = elapsedSeconds,
+            )
+        } else {
+            limitedForward = forward
+            forward
+        }
         val currentHeading = heading()
+        val yawRate = imu.getRobotAngularVelocity(AngleUnit.DEGREES)
+            .zRotationRate
+            .toDouble()
+        val translating = abs(forward) >= DRIVE_DEADBAND
+        zeroForwardSeconds = if (translating) {
+            0.0
+        } else {
+            zeroForwardSeconds + elapsedSeconds
+        }
         val holdingHeading = when {
+            !allowHeadingHold -> {
+                resetHeadingReference(currentHeading)
+                false
+            }
+
             !headingHoldEnabled -> {
-                targetHeading = currentHeading
+                resetHeadingReference(currentHeading)
                 false
             }
 
             abs(turn) >= TURN_DEADBAND -> {
                 targetHeading = currentHeading
+                headingCapturePending = true
+                headingSettledSeconds = 0.0
                 false
             }
 
-            abs(smoothForward) < DRIVE_DEADBAND -> {
+            headingCapturePending -> {
+                targetHeading = currentHeading
+                headingSettledSeconds = if (
+                    abs(yawRate) <= HEADING_CAPTURE_MAX_YAW_RATE
+                ) {
+                    headingSettledSeconds + elapsedSeconds
+                } else {
+                    0.0
+                }
+
+                if (
+                    headingSettledSeconds >=
+                    HEADING_CAPTURE_SETTLE_SECONDS
+                ) {
+                    headingCapturePending = false
+                    headingSettledSeconds = 0.0
+                    translating ||
+                        zeroForwardSeconds < HEADING_RELEASE_DELAY_SECONDS
+                } else {
+                    false
+                }
+            }
+
+            zeroForwardSeconds >= HEADING_RELEASE_DELAY_SECONDS -> {
                 targetHeading = currentHeading
                 false
             }
@@ -106,9 +192,6 @@ internal class Drivetrain(hardwareMap: HardwareMap) {
         } else {
             0.0
         }
-        val yawRate = imu.getRobotAngularVelocity(AngleUnit.DEGREES)
-            .zRotationRate
-            .toDouble()
         val headingControl = if (holdingHeading) {
             headingControl(
                 error = headingError,
@@ -151,22 +234,28 @@ internal class Drivetrain(hardwareMap: HardwareMap) {
             leftActualVelocity = leftActualVelocity,
             rightTargetVelocity = rightTargetVelocity,
             rightActualVelocity = rightActualVelocity,
+            leftCurrentAmps = leftMotor.getCurrent(CurrentUnit.AMPS),
+            rightCurrentAmps = rightMotor.getCurrent(CurrentUnit.AMPS),
             linearSpeedMmPerSecond = (
                 leftActualVelocity + rightActualVelocity
             ) / 2.0 * DrivetrainConfig.millimetersPerEncoderTick,
             batteryVoltage = voltageSensor.voltage,
-            headingHoldEnabled = headingHoldEnabled,
+            headingHoldEnabled =
+                headingHoldEnabled && allowHeadingHold,
         )
     }
 
     fun toggleHeadingHold() {
         headingHoldEnabled = !headingHoldEnabled
-        targetHeading = heading()
+        resetHeadingReference(heading())
         resetHeadingControl()
     }
 
     fun stop() {
         limitedForward = 0.0
+        limitedTankLeft = 0.0
+        limitedTankRight = 0.0
+        resetHeadingReference(heading())
         resetHeadingControl()
         setVelocity(left = 0.0, right = 0.0)
     }
@@ -230,6 +319,13 @@ internal class Drivetrain(hardwareMap: HardwareMap) {
         integralCorrection = 0.0
     }
 
+    private fun resetHeadingReference(currentHeading: Double) {
+        targetHeading = currentHeading
+        headingCapturePending = false
+        headingSettledSeconds = 0.0
+        zeroForwardSeconds = 0.0
+    }
+
     private fun loopElapsedSeconds(): Double {
         val now = System.nanoTime()
         val elapsedSeconds = ((now - lastDriveTimeNanos) / NANOS_PER_SECOND)
@@ -242,20 +338,41 @@ internal class Drivetrain(hardwareMap: HardwareMap) {
         target: Double,
         elapsedSeconds: Double,
     ): Double {
+        limitedForward = limitCommand(
+            target = target,
+            current = limitedForward,
+            elapsedSeconds = elapsedSeconds,
+        )
+        return limitedForward
+    }
+
+    private fun limitCommand(
+        target: Double,
+        current: Double,
+        elapsedSeconds: Double,
+    ): Double {
+        if (target * current < 0.0) {
+            val maximumChange =
+                REVERSAL_DECELERATION_PER_SECOND * elapsedSeconds
+            return if (current > 0.0) {
+                (current - maximumChange).coerceAtLeast(0.0)
+            } else {
+                (current + maximumChange).coerceAtMost(0.0)
+            }
+        }
+
         val rate = if (
-            abs(target) < abs(limitedForward) ||
-            target * limitedForward < 0.0
+            abs(target) < abs(current)
         ) {
             DECELERATION_PER_SECOND
         } else {
             ACCELERATION_PER_SECOND
         }
         val maximumChange = rate * elapsedSeconds
-        limitedForward += (target - limitedForward).coerceIn(
+        return current + (target - current).coerceIn(
             minimumValue = -maximumChange,
             maximumValue = maximumChange,
         )
-        return limitedForward
     }
 
     private fun setVelocity(left: Double, right: Double) {
@@ -281,6 +398,9 @@ internal class Drivetrain(hardwareMap: HardwareMap) {
 
         const val DRIVE_DEADBAND = 0.05
         const val TURN_DEADBAND = 0.05
+        const val HEADING_CAPTURE_MAX_YAW_RATE = 4.0
+        const val HEADING_CAPTURE_SETTLE_SECONDS = 0.15
+        const val HEADING_RELEASE_DELAY_SECONDS = 0.25
         const val HEADING_TOLERANCE_DEGREES = 0.35
         const val HEADING_KP = 0.012
         const val HEADING_KI = 0.004
@@ -291,6 +411,7 @@ internal class Drivetrain(hardwareMap: HardwareMap) {
 
         const val ACCELERATION_PER_SECOND = 3.0
         const val DECELERATION_PER_SECOND = 5.0
+        const val REVERSAL_DECELERATION_PER_SECOND = 3.0
         const val MAX_LOOP_TIME_SECONDS = 0.1
         const val NANOS_PER_SECOND = 1_000_000_000.0
     }

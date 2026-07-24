@@ -4,8 +4,14 @@ import com.qualcomm.robotcore.eventloop.opmode.OpMode
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp
 import kotlin.math.abs
 
-@TeleOp(name = "FGC: Arcade Drive", group = "FGC Vietnam")
-class DrivetrainTeleOp : OpMode() {
+enum class DriveControlMode {
+    ARCADE,
+    TANK,
+}
+
+abstract class SharedDriveTeleOp protected constructor(
+    private val controlMode: DriveControlMode,
+) : OpMode() {
     private lateinit var drivetrain: Drivetrain
     private lateinit var flywheel: Flywheel
 
@@ -19,13 +25,21 @@ class DrivetrainTeleOp : OpMode() {
         flywheel = Flywheel(hardwareMap)
         telemetry.addData(
             "Status",
-            "A heading hold | B flywheel | D-pad Up/Down RPM",
+            if (controlMode == DriveControlMode.ARCADE) {
+                "A heading hold | B flywheel | D-pad Up/Down RPM"
+            } else {
+                "Tank: sticks Y | B flywheel | D-pad Up/Down RPM"
+            },
         )
     }
 
     override fun loop() {
         val headingToggle = gamepad1.a
-        if (headingToggle && !previousHeadingToggle) {
+        if (
+            controlMode == DriveControlMode.ARCADE &&
+            headingToggle &&
+            !previousHeadingToggle
+        ) {
             drivetrain.toggleHeadingHold()
         }
         previousHeadingToggle = headingToggle
@@ -48,19 +62,42 @@ class DrivetrainTeleOp : OpMode() {
         }
         previousFlywheelDecrease = flywheelDecrease
 
-        val forward = deadband(-gamepad1.left_stick_y.toDouble())
-        val turn = deadband(-gamepad1.right_stick_x.toDouble())
-        val drive = drivetrain.drive(forward = forward, turn = turn)
+        val leftStickY =
+            deadband(-gamepad1.left_stick_y.toDouble())
+        val rightStickY =
+            deadband(-gamepad1.right_stick_y.toDouble())
+        val rightStickX =
+            deadband(-gamepad1.right_stick_x.toDouble())
+        val drive = when (controlMode) {
+            DriveControlMode.ARCADE -> drivetrain.drive(
+                forward = leftStickY,
+                turn = rightStickX,
+            )
+
+            DriveControlMode.TANK -> drivetrain.driveTank(
+                left = rightStickY,
+                right = leftStickY,
+            )
+        }
         val flywheelState = flywheel.update()
 
-        telemetry.addData(
-            "Input",
-            "forward=%.2f→%.2f turn=%.2f hold=%s",
-            drive.requestedForward,
-            drive.limitedForward,
-            drive.requestedTurn,
-            if (drive.headingHoldEnabled) "ON" else "OFF",
-        )
+        when (controlMode) {
+            DriveControlMode.ARCADE -> telemetry.addData(
+                "Input",
+                "forward=%.2f→%.2f turn=%.2f hold=%s",
+                drive.requestedForward,
+                drive.limitedForward,
+                drive.requestedTurn,
+                if (drive.headingHoldEnabled) "ON" else "OFF",
+            )
+
+            DriveControlMode.TANK -> telemetry.addData(
+                "Input",
+                "left motor(R stick)=%.2f right motor(L stick)=%.2f",
+                rightStickY,
+                leftStickY,
+            )
+        }
         telemetry.addData(
             "Heading",
             "now=%.1f° target=%.1f° error=%+.2f° rate=%+.1f°/s",
@@ -84,6 +121,13 @@ class DrivetrainTeleOp : OpMode() {
             drive.leftTargetVelocity,
             drive.rightActualVelocity,
             drive.rightTargetVelocity,
+        )
+        telemetry.addData(
+            "Drive current",
+            "L=%.2f A R=%.2f A total=%.2f A",
+            drive.leftCurrentAmps,
+            drive.rightCurrentAmps,
+            drive.leftCurrentAmps + drive.rightCurrentAmps,
         )
         telemetry.addData(
             "Robot",
@@ -136,3 +180,7 @@ class DrivetrainTeleOp : OpMode() {
         const val JOYSTICK_DEADBAND = 0.05
     }
 }
+
+@TeleOp(name = "FGC: Arcade Drive", group = "FGC Vietnam")
+class DrivetrainTeleOp :
+    SharedDriveTeleOp(DriveControlMode.ARCADE)
